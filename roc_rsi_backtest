@@ -1,0 +1,233 @@
+clc; close all, format compact; format long
+
+%% get data
+
+clear all
+filename = '***location\bitcoin_trade_data.csv***';
+delimiter = ',';
+formatSpec = '%f%f%f%[^\n\r]';
+fileID = fopen(filename,'r');
+dataArray = textscan(fileID, formatSpec, 'Delimiter', delimiter, 'EmptyValue' ,NaN, 'ReturnOnError', false);
+fclose(fileID);
+UnixTime = dataArray{:, 1};
+Price = dataArray{:, 2};
+Vol = dataArray{:, 3};
+clearvars filename delimiter formatSpec fileID dataArray ans bestRocPeriods;
+% once the above has been run, save the output as a .mat file, and simply load
+% this to save time:
+% load('***location\bitcoin_trade_data.mat***')
+
+%%
+
+fees=0.998^2; % exchange fees for buy + sell together
+timeinterval = 60; % in seconds
+topEdge = max(UnixTime); % define limits
+botEdge = min(UnixTime); % define limits
+% ignore partial bin at end of data
+topEdge = topEdge-rem(topEdge-botEdge,timeinterval); 
+% define number of bins (discrete time periods)
+numBins = (topEdge-botEdge)/timeinterval; 
+% times that bins start/end
+allbinEdges = linspace(botEdge, topEdge, numBins+1)'; 
+% 'h' is how many trades are in each bin
+[h,whichBin] = histc(UnixTime, allbinEdges); 
+% a cumulative sum of 'h' will give the position of the last trade in each bin (i.e. 'closing' trades)
+closepos=cumsum(h); 
+% using the positions of closing trades with the price matrix to get a set of close values
+allClose=Price(closepos); 
+% finds how many values there are at the end of the data which have been excluded
+temp = length(whichBin(whichBin==0)); 
+% removes said values
+whichBin=whichBin(1:end-temp);
+
+% Vol2=Vol(1:end-temp);
+% allVolume = accumarray(whichBin,Vol2,[size(allbinEdges,1),1]);
+ 
+clearvars closepos timeinterval numBins whichBin
+
+clear timeRange
+timeRange=0;
+% timeRange = 'all';
+if strcmp(timeRange,'all')==1;
+    Close=allClose;
+    binEdges=allbinEdges;
+else
+    startDate = ('15-Nov-2013');
+    endDate = ('21-Aug-2014');
+    startEdge = double(floor(86400 * (datenum(startDate) - datenum('01-Jan-1970'))));
+    endEdge = double(floor(86400 * (datenum(endDate) - datenum('01-Jan-1970'))));
+    startElement=ceil((startEdge-botEdge)/(topEdge-botEdge)*length(allClose));
+    endElement=floor((endEdge-botEdge)/(topEdge-botEdge)*length(allClose));
+    Close=allClose(startElement:endElement);
+    binEdges=allbinEdges(startElement:endElement);
+%     Volume=allVolume(startElement:endElement);
+end
+hilocl=[Close,Close,Close];
+clearvars startDate endDate startEdge endEdge topEdge botEdge allClose allbinEdges startElement endElement
+%% limit settings
+% periods for both, llims for ROC, ulims for RSI
+% periods=[45:1:55]; 
+periods_RSI=[40];  
+periods=[51];   
+llims=[-5.5];                % ROC
+ulims=[65];                  % RSI
+N=length(periods);
+M=length(periods_RSI);
+O=length(llims);
+P=length(ulims);
+
+num=length(Close);
+roc_output=zeros(num,N);
+rsi_output=zeros(num,N);
+% [macd_out]=indicators(Close,'macd',12,26,9);
+
+    clearvars shortratios longratios all_buy all_sell ind1;
+    clearvars ind2 position used_buy used_sell
+
+%% for limit indicators
+
+% preallocation
+best_short_lims=zeros(N,3);
+best_long_lims=zeros(N,3);
+short_pcprofit=zeros(O,P);
+long_pcprofit=zeros(O,P);
+bestRocShort=zeros(M,4);
+bestRocLong=zeros(M,4);
+
+for Q=1:M;   
+    rsi_output(:,Q)=indicators((Close),'rsi',periods_RSI(Q));
+    for R=1:N; 
+        roc_output(:,R)=indicators((Close),'roc',periods(R));
+%         rsi_output(:,R)=indicators(Close,'rsi',periods(R)); % switch which one iterates through different periods
+        %all_buy=zeros(num,1); all_sell=zeros(num,1); used_buy=zeros(num,N); used_sell=zeros(num,N);    % preallocate
+        for S=1:O;
+            all_buy=(roc_output(:,R)<=llims(S)).*Close;
+            ind1 = find(all_buy);
+            for T=1:P;
+                used_buy=zeros(num,1);  % preallocation
+                used_sell=zeros(num,1);
+                all_sell=(rsi_output(:,Q)>=ulims(T)).*Close;
+                ind2 = find(all_sell);
+                if(min(ind1)<min(ind2)) % set initial position
+                    position=0;
+                else
+                    position=1;
+                end
+                initialposition=position;
+                for U=1:num
+                    if  position==1 && rsi_output(U,Q)>=ulims(T)
+                        position=0; % initial position sold
+                        used_sell(U,1)=all_sell(U);
+                    end
+                    if position==0 && roc_output(U,R)<=llims(S)
+                        position=1; % initial position bought
+                        used_buy(U,1)=all_buy(U);
+                    end
+                end
+                ind3=find(used_buy);
+                ind4=find(used_sell);
+                used_buy=used_buy(used_buy~=0);
+                used_sell=used_sell(used_sell~=0);
+                [shortratios, longratios]=ratios(initialposition, used_buy, used_sell);
+                avg_short=mean(shortratios);
+                avg_long=mean(longratios);
+                short_pcprofit(S,T)=(prod(shortratios)-1)*100;
+                long_pcprofit(S,T)=(prod(longratios)-1)*100;
+                clear ind2;
+                test=all_sell;
+                clear all_sell;
+            end
+            clear ind1;
+            clear all_buy;
+        end
+        [G] = max(short_pcprofit(:));
+        [H] = max(long_pcprofit(:));
+        [i,j] = ind2sub(size(short_pcprofit),find(short_pcprofit==G));
+        [k,l] = ind2sub(size(long_pcprofit),find(long_pcprofit==H));
+        best_short_lims(R,1)=llims(i(1));
+        best_short_lims(R,2)=ulims(j(1));
+        best_short_lims(R,3)=short_pcprofit(i(1),j(1));
+        best_long_lims(R,1)=llims(k(1));
+        best_long_lims(R,2)=ulims(l(1));
+        best_long_lims(R,3)=long_pcprofit(k(1),l(1));
+%         fprintf('%.0f ',periods(R))
+    end
+    [GG] = max(best_short_lims(:,3));
+    [HH] = max(best_long_lims(:,3));
+    [ii,jj] = ind2sub(size(best_short_lims),find(best_short_lims==GG));
+    [kk,ll] = ind2sub(size(best_long_lims),find(best_long_lims==HH));
+    bestRocShort(Q,1:3)=best_short_lims(ii(1),:);
+    bestRocShort(Q,4)=periods(ii(1));
+    bestRocLong(Q,1:3)=best_long_lims(kk(1),:);
+    bestRocLong(Q,4)=periods(kk(1));
+
+end
+[MM] = max(bestRocShort(:,3));  
+[NN] = max(bestRocLong(:,3));
+[oo,pp] = ind2sub(size(bestRocShort),find(bestRocShort==MM)); % best short period for RSI
+[qq,rr] = ind2sub(size(bestRocLong),find(bestRocLong==NN));
+
+%% recalculate data using the best limits/period
+
+bestllim=bestRocShort(oo(1),1);
+bestulim=bestRocShort(oo(1),2);
+bestRocP=bestRocShort(oo(1),4);
+[rubbish,R]=find(periods==bestRocP);
+Q=oo(1);
+bestRsiP=periods_RSI(Q);
+bestProfit=bestRocShort(oo(1),3);
+longProfit_forbestshort=bestRocLong(oo(1),3);
+[avg_short,avg_long,short_pcprofit,long_pcprofit,shortratios,longratios,ind3,ind4,used_buy,used_sell,ind1,ind2] = ...
+    finaldata(bestllim,bestulim,Close,roc_output,rsi_output,num,Q,R);
+BandH=(Close(end)/Close(1)-1)*100;
+maxmin=(max(Close)/min(Close)-1)*100; % this may need more than max/min if multiple values come from max/min
+clearvars G GG H HH O P S T U rubbish
+
+fprintf('Short: \n ROC Period: %.0f \n RSI Period: %.0f \n Lower limit: %.2f \n Upper limit: %.2f \n Short Profit: %.2f%% \n Long Profit*: %.2f%% \n Buy and Hold: %.2f%% \n Max/Min: %.2f%%\n\n', ...
+    bestRocP,bestRsiP,bestllim,bestulim,bestProfit,longProfit_forbestshort,BandH,maxmin);
+% fprintf('Long: \n ROC Period: %.0f \n RSI Period: %.0f  \n Lower limit: %.2f \n Upper limit: %.2f \n Profit: %.2f%% \n\n', ...
+%     bestRocP,bestRsiP,bestllim,bestulim,bestProfit);
+if length(ii)>1
+    fprintf('*There are multiple periods which give the same results* \n\n')
+end
+
+%% combine roc and rsi to one matrix for plotting
+scaledown=5;
+selectRsi=rsi_output(:,Q);
+selectRoc=roc_output(:,R);
+selectRsi(selectRsi<=50)=50;
+selectRoc(selectRoc>=0)=0;
+combined_roc_rsi=[(selectRsi./scaledown)-(50/scaledown),selectRoc];
+
+%% plot
+figure()
+unix_epoch = datenum(1970,1,1,0,0,0);
+binEdges = binEdges./86400 + unix_epoch;        % NB using matlab time now, in order to use datetick
+doubleDate=[binEdges,binEdges];
+% [AX,H1,H2] = plotyy(binEdges,roc_output(:,ii(1)),binEdges,Close); % change ii to index f
+[AX,H1,H2] = plotyy(doubleDate,combined_roc_rsi,binEdges,Close); % change ii to index f
+    minRoc = min(nanmin(roc_output(:,R))); maxRoc = max(nanmax(roc_output(:,R)));
+set(AX(1),'YLim',[minRoc (maxRoc-minRoc)*2+maxRoc])
+set(AX(1),'YTick',[round(minRoc):(round(maxRoc)-round(minRoc))/5:round(maxRoc)])
+set(AX(2),'YLim',[min(Close)-(max(Close)-min(Close))/2 max(Close)])
+set(AX(2),'YTick',[round(min(Close)):round((max(Close)-min(Close))/10):round(max(Close))])
+set(AX(1),'XLim',[min(binEdges) max(binEdges)])
+set(AX(2),'XLim',[min(binEdges) max(binEdges)])
+set(H1,'color','blue')
+set(H2,'color','black')
+datetick(AX(1),'x',20,'keeplimits'); 
+datetick(AX(2),'x',20,'keeplimits');
+line('XData', [min(binEdges),max(binEdges)], 'YData', [bestulim/scaledown-50/scaledown,bestulim/scaledown-50/scaledown], 'LineStyle', '-','LineWidth', 1, 'Color','r');
+line('XData', [min(binEdges),max(binEdges)], 'YData', [bestllim,bestllim], 'LineStyle', '-','LineWidth', 1, 'Color','g');
+% 100% line for RSI
+line('XData', [min(binEdges) max(binEdges)], 'YData', [50/scaledown 50/scaledown], 'LineStyle', '-','LineWidth', 1, 'Color','k');
+gridxy(binEdges(ind3),'Color','g');
+gridxy(binEdges(ind4),'Color','r');
+ylabel(AX(1),'ROC')
+ylabel(AX(2),'Price')
+clearvars ii jj kk ll i j k l maxRoc minRoc AX H1 H2 unix_epoch oo pp qq rr M MM N NN Q R
+figure()
+hist(shortratios,50)
+% figure()
+% [short,] = movavg(ASSET,LEAD,LAG,ALPHA)
+% plot(binEdges,log(Volume))
